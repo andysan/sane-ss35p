@@ -89,7 +89,7 @@ BACKEND_CONFS= abaton.conf agfafocus.conf apple.conf artec.conf \
 	       leo.conf lexmark.conf ma1509.conf magicolor.conf \
 	       matsushita.conf microtek2.conf microtek.conf mustek.conf \
 	       mustek_pp.conf mustek_usb.conf nec.conf net.conf \
-	       p5.conf \
+	       p5.conf polaroid_ss35p.conf \
 	       pie.conf pixma.conf plustek.conf plustek_pp.conf \
 	       qcam.conf ricoh.conf rts8891.conf s9036.conf sceptre.conf \
 	       sharp.conf sm3840.conf snapscan.conf sp15c.conf \
@@ -184,6 +184,7 @@ be_convenience_libs = libabaton.la libagfafocus.la \
     libniash.la libp5.la \
     libpie.la libpint.la libpixma.la \
     libplustek.la libplustek_pp.la libpnm.la \
+    libpolaroid_ss35p.la \
     libqcam.la libricoh.la librts8891.la \
     libs9036.la libsceptre.la libsharp.la \
     libsm3600.la libsm3840.la libsnapscan.la \
@@ -218,6 +219,7 @@ be_dlopen_libs = libsane-abaton.la libsane-agfafocus.la \
     libsane-niash.la libsane-p5.la \
     libsane-pie.la libsane-pint.la libsane-pixma.la \
     libsane-plustek.la libsane-plustek_pp.la libsane-pnm.la \
+    libsane-polaroid_ss35p.la \
     libsane-qcam.la libsane-ricoh.la libsane-rts8891.la \
     libsane-s9036.la libsane-sceptre.la libsane-sharp.la \
     libsane-sm3600.la libsane-sm3840.la libsane-snapscan.la \
@@ -849,6 +851,15 @@ nodist_libsane_pnm_la_SOURCES = pnm-s.c
 libsane_pnm_la_CPPFLAGS = $(AM_CPPFLAGS) -DBACKEND_NAME=pnm
 libsane_pnm_la_LDFLAGS = $(DIST_SANELIBS_LDFLAGS)
 libsane_pnm_la_LIBADD = $(COMMON_LIBS) libpnm.la ../sanei/sanei_init_debug.lo ../sanei/sanei_constrain_value.lo ../sanei/sanei_config.lo  sane_strstatus.lo 
+
+libpolaroid_ss35p_la_SOURCES = polaroid_ss35p.c polaroid_ss35p.h
+libpolaroid_ss35p_la_CPPFLAGS = $(AM_CPPFLAGS) -DBACKEND_NAME=polaroid_ss35p
+
+nodist_libsane_polaroid_ss35p_la_SOURCES = polaroid_ss35p-s.c
+libsane_polaroid_ss35p_la_CPPFLAGS = $(AM_CPPFLAGS) -DBACKEND_NAME=polaroid_ss35p
+libsane_polaroid_ss35p_la_LDFLAGS = $(DIST_SANELIBS_LDFLAGS)
+libsane_polaroid_ss35p_la_LIBADD = $(COMMON_LIBS) libpolaroid_ss35p.la ../sanei/sanei_init_debug.lo ../sanei/sanei_constrain_value.lo ../sanei/sanei_config.lo ../sanei/sanei_config2.lo sane_strstatus.lo ../sanei/sanei_scsi.lo $(SCSI_LIBS) $(RESMGR_LIBS)
+EXTRA_DIST += polaroid_ss35p.conf.in
 
 libqcam_la_SOURCES = qcam.c qcam.h
 libqcam_la_CPPFLAGS = $(AM_CPPFLAGS) -DBACKEND_NAME=qcam

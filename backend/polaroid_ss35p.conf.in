@@ -1,0 +1,11 @@
+#
+# Options for the Polaroid SprintScan 35+ backend
+#
+
+# Directory where firmware files are stored
+firmware @DATADIR@/sane/polaroid_ss35p/
+
+scsi POLAROID 35MM Scanner * * * *
+
+# scsi device list
+/dev/scanner
