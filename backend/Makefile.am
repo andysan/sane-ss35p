@@ -39,7 +39,7 @@ DIST_LIBS_LDFLAGS = $(AM_LDFLAGS) -rpath '$(libdir)' -version-number $(V_MAJOR):
 
 # LIBTOOL install is a little to noisy for my liking.
 LIBTOOL = @LIBTOOL@ --silent
-FIRMWARE_DIRS = artec_eplus48u gt68xx snapscan epjitsu
+FIRMWARE_DIRS = artec_eplus48u gt68xx snapscan epjitsu polaroid_ss35p
 
 EXTRA_DIST = sane_strstatus.c
 
