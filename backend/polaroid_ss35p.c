@@ -74,13 +74,15 @@
 #define MAX_SOURCE_SIZE 128
 #define MAX_MODE_SIZE 128
 
+#define SCSI_TEST_UNIT_READY 0x00
 #define SCSI_REQUEST_SENSE 0x03
-#define SCSI_MODE_SELECT 0x15
 #define SCSI_INQUIRY 0x12
+#define SCSI_MODE_SELECT 0x15
 #define SCSI_START_STOP 0x1B
 #define SCSI_READ_10 0x28
 #define SCSI_WRITE_10 0x2A
 #define SCSI_SET_WINDOW 0x24
+#define SCSI_WRITE_BUFFER 0x3B
 
 
 #define SCSI_INQ_REPLY_LEN 96
@@ -102,6 +104,13 @@
     (p)[1] = GET_BYTE((i), 0);                  \
   } while(0)
 
+#define SET_BE_INT24(p, i)                      \
+  do {                                          \
+    (p)[0] = GET_BYTE((i), 16);                 \
+    (p)[1] = GET_BYTE((i), 8);                  \
+    (p)[2] = GET_BYTE((i), 0);                  \
+  } while(0)
+
 #define SET_BE_INT32(p, i)                      \
   do {                                          \
     (p)[0] = GET_BYTE((i), 24);                 \
@@ -109,6 +118,16 @@
     (p)[2] = GET_BYTE((i), 8);                  \
     (p)[3] = GET_BYTE((i), 0);                  \
   } while(0)
+
+#define GET_BE_UINT16(p)                                 \
+  (((u_int)(p)[0] << 8) |                                \
+   ((u_int)(p)[1] << 0))
+
+#define GET_BE_UINT32(p)                                 \
+  (((u_int)(p)[0] << 24) |                               \
+   ((u_int)(p)[1] << 16) |                               \
+   ((u_int)(p)[2] << 8) |                                \
+   ((u_int)(p)[3] << 0))
 
 static SANE_String_Const scan_source_list[] = {
   "Landscape",
@@ -285,6 +304,22 @@ dump_scsi_req(const void *req, size_t req_size,
   }
 }
 
+#if 0
+static SANE_Status
+scsi_test_unit_ready(int fd)
+{
+  u_char req[] = {
+    SCSI_TEST_UNIT_READY,
+    0,               /* LUN */
+    0, 0, 0,         /* Reserved */
+    0                /* Control */
+  };
+
+  dump_scsi_req(req, sizeof(req), NULL, 0);
+  return sanei_scsi_cmd(fd, req, sizeof(req), NULL, NULL);
+}
+#endif
+
 static SANE_Status
 scsi_inquiry(int fd, void *resp, size_t *resp_len)
 {
@@ -370,6 +405,33 @@ scsi_write(int fd, u_int addr, const void *data, size_t size)
 }
 
 static SANE_Status
+scsi_write_buffer(int fd, u_char mode, u_char buffer_id, u_int offset,
+                  void *data, size_t size)
+{
+  char req[] = {
+    SCSI_WRITE_BUFFER,
+    0,              /* Mode */
+    0,              /* Buffer ID */
+    0, 0, 0,        /* Offset */
+    0, 0, 0,        /* Size */
+    0               /* Control */
+  };
+
+  req[1] = mode;
+  req[2] = buffer_id;
+  SET_BE_INT24(req + 3, offset);
+  SET_BE_INT24(req + 6, size);
+
+  assert(offset <= 0xFFFFFF);
+  assert(size <= 0xFFFFFF);
+
+  dump_scsi_req(req, sizeof(req), data, size);
+  return sanei_scsi_cmd2(fd,
+                         req, sizeof(req), data, size,
+                         NULL, NULL);
+}
+
+static SANE_Status
 scsi_mode_select(int fd, void *data, size_t size)
 {
   char req[] = {
@@ -432,21 +494,19 @@ scsi_start_stop(int fd, u_char cmd)
 static SANE_Status
 ss35p_on_sense(int fd, u_char *sense_buffer, void *arg)
 {
-  Polaroid_SS35P_Device *dev = (Polaroid_SS35P_Device *)arg;
+  Polaroid_SS35P_Scanner *self = (Polaroid_SS35P_Scanner *)arg;
 
-  /* u_char key = sense_buffer[2] & 0xF; */
-  u_char asc = sense_buffer[12];
-  u_char ascq = sense_buffer[13];
-  unsigned int asc_ascq = (asc << 8) | ascq;
+  u_int kcq = ((sense_buffer[2] & 0xF) << 16) |
+    (sense_buffer[12] << 8) |
+    sense_buffer[13];
 
   /* Silence warnings */
   fd = fd;
-  dev = dev;
+  self = self;
 
-  DBG(DBG_INFO, "Sense: ASC: 0x%.2x ASCQ: 0x%.2x\n",
-      (int)asc, (int)ascq);
+  DBG(DBG_INFO, "Sense (KCQ: 0x%.5x)\n", kcq);
 
-  switch (asc_ascq) {
+  switch (kcq & 0x0FFFF) {
   case 0:
   case 0x2A01:
   case 0x4800:
@@ -495,11 +555,220 @@ ss35p_on_sense(int fd, u_char *sense_buffer, void *arg)
   case 0x4000:
     /* ? */
   default:
-    DBG(DBG_ERROR, "Unhandled sense. ASC: 0x%.2x ASCQ: 0x%.2x\n",
-        (int)asc, (int)ascq);
+    DBG(DBG_ERROR, "Unhandled sense. KCQ: 0x%.5x\n", kcq);
     return SANE_STATUS_IO_ERROR;
   };
 
+}
+
+static SANE_Status
+ss35p_load_fw(Polaroid_SS35P_Scanner *self)
+{
+  SANE_Status status;
+  unsigned int i;
+  char path[PATH_MAX];
+  char rev[4];
+  u_char header_data[POLAROID_SS35P_FW_HEADER_SIZE];
+  u_char *fw_block = NULL;
+  size_t max_block = 0;
+  Polaroid_SS35P_Firmware fw;
+  FILE *file = NULL;;
+
+  if (!firmware_dir || !firmware_dir[0]) {
+    DBG(DBG_ERROR, "Firmware dir not specified\n");
+    status = SANE_STATUS_INVAL;
+    goto err_out;
+  }
+
+  rev[0] = self->device->revision[0];
+  rev[1] = self->device->revision[2];
+  rev[2] = self->device->revision[1] != '.' ? self->device->revision[1] : '\0';
+  rev[3] = '\0';
+
+  snprintf(path, sizeof(path), "%s/ss35p.%s", firmware_dir, rev);
+  file = fopen(path, "r");
+  if (!file) {
+    DBG(DBG_INFO, "Failed to open '%s'\n", path);
+    snprintf(path, sizeof(path), "%s/SS35P.%s", firmware_dir, rev);
+    file = fopen(path, "r");
+    if (!file) {
+      DBG(DBG_INFO, "Failed to open '%s'\n", path);
+      DBG(DBG_ERROR, "No firmware found, can't upload firmware\n");
+      status = SANE_STATUS_INVAL;
+      goto err_out;
+    }
+  }
+
+  if (fread(header_data, sizeof(header_data), 1, file) != 1) {
+    DBG(DBG_ERROR, "Failed to read firmware header\n");
+    status = SANE_STATUS_INVAL;
+    goto err_out;
+  }
+
+  /* Load firmware structure from memory. We could just've fread into
+     the structure, but since structure alignment is ABI specific,
+     let's do it manually instead. */
+  memcpy(fw.target_name, header_data + 0, 16);
+  fw.ver_maj = GET_BE_UINT16(header_data + 16);
+  fw.ver_min = GET_BE_UINT16(header_data + 18);
+  fw.no_blocks = GET_BE_UINT16(header_data + 20);
+  /*  2 unknown bytes, possibly padding */
+  for (i = 0; i < 14; i++) {
+    u_char *c = header_data + 24 + i * 20;
+    fw.blocks[i].buffer_id = GET_BE_UINT32(c + 0);
+    fw.blocks[i].dev_offset = GET_BE_UINT32(c + 4);
+    fw.blocks[i].length = GET_BE_UINT32(c + 8);
+    fw.blocks[i].file_offset = GET_BE_UINT32(c + 12);
+    if (fw.blocks[i].length > max_block)
+      max_block = fw.blocks[i].length;
+    /* 4 Unknown bytes */
+  }
+  /* 8 unknown bytes */
+
+
+  /* TODO: Should we check the firmware version here? The original
+     driver doesn't seem to do that. */
+
+  DBG(DBG_INFO, "Loaded firmware '%.16s', version %u.%u.\n",
+      fw.target_name, fw.ver_maj, fw.ver_min);
+
+
+  DBG(DBG_SS35P, "Uploading %u blocks to device\n", fw.no_blocks);
+  fw_block = malloc(max_block);
+  if (!fw_block) {
+    status = SANE_STATUS_NO_MEM;
+    goto err_out;
+  }
+  if (fw.no_blocks > 14) {
+    DBG(DBG_ERROR, "Too many blocks in firmware file. File corrupted?\n");
+    status = SANE_STATUS_INVAL;
+    goto err_out;
+  }
+  for (i = 0; i < fw.no_blocks; i++) {
+    Polaroid_SS35P_FirmwareBlock *b = fw.blocks + i;
+    DBG(DBG_SS35P, "FW block %u (file offset: %u, buffer: %u, offset: %u, len: %u)\n",
+        i, b->file_offset, b->buffer_id, b->dev_offset, b->length);
+    if (fseek(file, b->file_offset, SEEK_SET) == -1) {
+      DBG(DBG_ERROR, "Failed to set position (0x%x) in firmware file\n",
+          b->file_offset);
+      status = SANE_STATUS_INVAL;
+      goto err_out;
+    }
+
+    if (fread(fw_block, b->length, 1, file) != 1) {
+      DBG(DBG_ERROR, "Failed to read firmware block\n");
+      status = SANE_STATUS_INVAL;
+      goto err_out;
+    }
+
+    sleep(1);
+    status = scsi_write_buffer(self->fd, 4, b->buffer_id, b->dev_offset,
+                               fw_block, b->length);
+    if (status != SANE_STATUS_GOOD)
+      goto err_out;
+  }
+
+  free(fw_block);
+  fclose(file);
+
+  return SANE_STATUS_GOOD;
+
+ err_out:
+  if (fw_block)
+    free(fw_block);
+
+  if (file)
+    fclose(file);
+
+  return status;
+}
+
+static SANE_Status
+ss35p_load_cv(Polaroid_SS35P_Scanner *self)
+{
+  SANE_Status status;
+  char path[PATH_MAX];
+  FILE *file = NULL;
+  u_char buf[POLAROID_SS35P_REG_CV_LEN];
+  u_int i;
+
+  if (!firmware_dir || !firmware_dir[0]) {
+    DBG(DBG_ERROR, "Firmware dir not specified\n");
+    status = SANE_STATUS_INVAL;
+    goto out;
+  }
+
+  /* There might apparently be 3 different CV files that are supposed
+     to be mangled and written to different registers. I've only seen
+     CV1 so far, so we won't try to look for the others at the
+     moment. */ 
+  snprintf(path, sizeof(path), "%s/ss35p.cv1", firmware_dir);
+  file = fopen(path, "r");
+  if (!file) {
+    DBG(DBG_INFO, "Failed to open '%s'\n", path);
+    snprintf(path, sizeof(path), "%s/SS35P.CV1", firmware_dir);
+    file = fopen(path, "r");
+    if (!file) {
+      DBG(DBG_INFO, "Failed to open '%s'\n", path);
+      DBG(DBG_ERROR, "No CV1 file found\n");
+      status = SANE_STATUS_INVAL;
+      goto out;
+    }
+  }
+
+  if (fread(buf, sizeof(buf), 1, file) != 1) {
+    DBG(DBG_ERROR, "Failde to read CV1 file.\n");
+    status = SANE_STATUS_INVAL;
+    goto out;
+  }
+
+  for (i = 0; i < sizeof(buf); i += 2) {
+    unsigned int word;
+
+    /* Why, why!? This is done by the original driver for some
+       reason. */
+    word = (buf[i + 1] << 14) |
+      (buf[i + 0] << 6);
+    buf[i + 0] = (word >> 8) & 0xFF;
+    buf[i + 1] = word & 0xFF;
+  }
+
+  status = scsi_write(self->fd, POLAROID_SS35P_REG_CV_BASE | 0x1, buf, sizeof(buf));
+
+ out:
+  if (file)
+    fclose(file);
+
+  return status;
+}
+
+static SANE_Status
+ss35p_request_sense(Polaroid_SS35P_Scanner *self)
+{
+  u_char sense_buf[POLAROID_SS35P_SENSE_LEN];
+  Polaroid_SS35P_Sense *s = &self->sense;
+  size_t size;
+  SANE_Status status;
+
+  memset(sense_buf, '\0', sizeof(sense_buf));
+  size = sizeof(sense_buf);
+  status = scsi_request_sense(self->fd, sense_buf, &size);
+  if (status != SANE_STATUS_GOOD)
+    return status;
+
+  if (size != sizeof(sense_buf))
+      DBG(DBG_WARNING, "Got '%u' bytes of SCSI sense, requested '%u' bytes.\n",
+          (u_int)size, (u_int)sizeof(sense_buf));
+
+  s->kcq = ((sense_buf[2] & 0xF) << 16) |
+    (sense_buf[12] << 8) |
+    sense_buf[13];
+
+  s->unknown0 = GET_BE_UINT32(sense_buf + 18 + 0);
+  s->no_scans = GET_BE_UINT32(sense_buf + 18 + 4);
+  s->unknown1 = GET_BE_UINT32(sense_buf + 18 + 8);
+
+  return SANE_STATUS_GOOD;
 }
 
 static SANE_Status
@@ -620,7 +889,8 @@ static SANE_Status
 ss35p_open(Polaroid_SS35P_Scanner **handle, Polaroid_SS35P_Device *dev)
 {
   SANE_Status status = SANE_STATUS_INVAL;
-  Polaroid_SS35P_Scanner *self;
+  Polaroid_SS35P_Scanner *self = NULL;
+  int sense_len;
 
   DBG(DBG_SS35P, "ss35p_open: %s\n", dev->sane.name);
 
@@ -629,10 +899,18 @@ ss35p_open(Polaroid_SS35P_Scanner **handle, Polaroid_SS35P_Device *dev)
   if (!self)
     return SANE_STATUS_NO_MEM;
 
-  status = sanei_scsi_open(dev->sane.name, &self->fd, &ss35p_on_sense, dev);
+  sense_len = POLAROID_SS35P_SENSE_LEN;
+  status = sanei_scsi_open(dev->sane.name, &self->fd,
+                           &ss35p_on_sense, self);
   if (status != SANE_STATUS_GOOD)
     goto err_out;
+  if (sense_len < POLAROID_SS35P_SENSE_LEN) {
+    DBG(DBG_ERROR, "Unable to reserve enough memory for a SCSI sense buffer\n");
+    status = SANE_STATUS_NO_MEM;
+    goto err_out;
+  }
 
+  /* TODO: Disable debug code */
 #if 1
   self->file_dmp = fopen("/tmp/ss35p.dmp", "w");
 #else
@@ -653,9 +931,30 @@ ss35p_open(Polaroid_SS35P_Scanner **handle, Polaroid_SS35P_Device *dev)
 
   self->current_line = 0;
 
+  /* Check if we need to load FW */
+  status = ss35p_request_sense(self);
+  switch (self->sense.kcq & 0x0FFFF) {
+  case 0x0402:
+  case 0x2200:
+  case 0x2900:
+    DBG(DBG_INFO, "Firmware not loaded, loading firmware...\n");
+    status = ss35p_load_fw(self);
+    if (status != SANE_STATUS_GOOD)
+      goto err_out;
+    status = ss35p_load_cv(self);
+    if (status != SANE_STATUS_GOOD)
+      goto err_out;
+    break;
+  default:
+    break;
+  }
+
   return SANE_STATUS_GOOD;
 
  err_out:
+  if (self)
+    free(self);
+
   return status;
 }
 
@@ -677,6 +976,7 @@ ss35p_attach(Polaroid_SS35P_Device **_dev, const char *devname)
   SANE_Status status = SANE_STATUS_INVAL;
   char inq[SCSI_INQ_REPLY_LEN];
   size_t inq_len = sizeof(inq);
+  int sense_len;
 
   DBG(DBG_SS35P, "ss35p_attach: %s\n", devname);
 
@@ -685,10 +985,16 @@ ss35p_attach(Polaroid_SS35P_Device **_dev, const char *devname)
   if (!dev)
     return SANE_STATUS_NO_MEM;
 
-  status = sanei_scsi_open(devname, &fd, &ss35p_on_sense, dev);
+  sense_len = POLAROID_SS35P_SENSE_LEN;
+  status = sanei_scsi_open(devname, &fd,
+                                    &ss35p_on_sense, NULL);
   if (status != SANE_STATUS_GOOD)
     goto err_out;
-
+  if (sense_len < POLAROID_SS35P_SENSE_LEN) {
+    DBG(DBG_ERROR, "Unable to reserve enough memory for a SCSI sense buffer\n");
+    status = SANE_STATUS_NO_MEM;
+    goto err_out;
+  }
 
   status = scsi_inquiry(fd, inq, &inq_len);
   if (status != SANE_STATUS_GOOD || inq_len < SCSI_INQ_REPLY_LEN) {
