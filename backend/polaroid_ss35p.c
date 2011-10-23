@@ -1094,11 +1094,10 @@ refresh_options(Polaroid_SS35P_Scanner *self)
   x1 = SANE_UNFIX(self->val[OPT_BR_X].w);
   y1 = SANE_UNFIX(self->val[OPT_BR_Y].w);
 
-  assert(x0 < x1);
-  assert(y0 < y1);
-
   self->x0 = x0 * px_per_mm;
   self->y0 = y0 * px_per_mm;
+  self->x1 = x1 * px_per_mm;
+  self->y1 = y1 * px_per_mm;
   self->width = (x1 - x0) * px_per_mm;
   self->height = (y1 - y0) * px_per_mm;
 }
@@ -1396,6 +1395,12 @@ sane_start(SANE_Handle handle)
   SANE_Status status;
 
   DBG(DBG_SANE, "sane_start\n");
+
+  if (self->x0 > self->x1 ||
+      self->y0 > self->y1) {
+    DBG(DBG_ERROR, "Invalid region specified.\n");
+    return SANE_STATUS_INVAL;
+  };
 
   status = ss35p_mode_select(self,
                              self->bytes_per_pixel * self->width,
