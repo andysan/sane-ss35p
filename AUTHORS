@@ -84,6 +84,7 @@ Backends:
  plustek_pp:    Rick Bronson (former pp driver-code), Gerhard Jaeger (*)
  pnm:           Andreas Beck, Gordon Matzigkeit, David Mosberger, Michael
                 Herder, and Henning Geinitz (*)
+ polaroid_ss35p:Andreas Sandberg
  qcam:          Scott Laird (original driver), David Mosberger (SANE backend),
                 despeckling filter by Patrick Reynolds, 
                 B&W fixes by Andrew Kuchling
@@ -153,6 +154,7 @@ Andreas Bolsch <ab@maths.nott.ac.uk>
 Andreas Czechanowski <m075@ins.uni-stuttgart.de>
 Andreas Nowack <nowack.andreas@gmx.de>
 Andreas Rick <andreas.rick@free.fr>
+Andreas Sandberg <andreas@sandberg.pp.se>
 Andrew Kuchling <amk@magnet.com>
 Bernd Schroeder <bernd@aquila.muc.de>
 Bertrik Sikken <bertrik@zonnet.nl>
